@@ -1,0 +1,13 @@
+__pycache__/
+checkpoints/
+plots/
+test_data/
+
+
+*.pt
+*.pth
+
+
+*.png
+*.jpg
+
