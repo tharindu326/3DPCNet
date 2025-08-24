@@ -3,6 +3,8 @@ Inference script for 3DPCNet pose canonicalization.
 Loads a checkpoint and runs canonicalization on input poses.
 
 python inference.py --checkpoint checkpoints/train1/best_model.pth --input test_data/test_samples.npy --save test_data/outputs.npz --plot --gt test_data/test_samples_gt.npz --plot-dir plots
+python inference.py --checkpoint checkpoints/20250824_143159/best_model.pth --npz dataset/splits/S3_split_250824_2/test.npz --save test_data/test.npz --plot --plot-dir plots2
+
 """
 
 import argparse
@@ -129,7 +131,8 @@ def main():
     parser = argparse.ArgumentParser(description="3DPCNet Inference")
     parser.add_argument('--config', type=str, default=None, help='Path to config YAML (optional)')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint (.pth)')
-    parser.add_argument('--input', type=str, default=None, help='Path to a .npy of poses with shape (N, J, 3)')
+    parser.add_argument('--input', type=str, default=None, help='Path to a .npy of poses with shape (N, J, 3) or a single pose (J, 3)')
+    parser.add_argument('--npz', type=str, default=None, help='Path to a materialized dataset .npz (e.g., test.npz) containing input_pose and optional canonical_pose')
     parser.add_argument('--save', type=str, default=None, help='Path to save outputs (npz with canonical and rotation_matrix)')
     parser.add_argument('--gt', type=str, default=None, help='Optional path to GT npz (with canonical) for plotting')
     parser.add_argument('--plot', action='store_true', help='Plot predictions (and GT if provided) for all samples')
@@ -156,14 +159,31 @@ def main():
     logger.info(f"Loading checkpoint: {args.checkpoint}")
     load_checkpoint(model, args.checkpoint, device)
 
-    if args.input is None:
-        logger.info("No input provided. Running a dummy example (batch=1)")
-        poses = torch.randn(1, model_cfg.get('input_joints', 17), 3)
-    else:
+    gt_canon = None
+    if args.npz is not None:
+        import numpy as np
+        logger.info(f"Loading dataset NPZ: {args.npz}")
+        d = np.load(args.npz, allow_pickle=False)
+        if 'input_pose' not in d:
+            raise KeyError("NPZ must contain 'input_pose' array with shape (N, J, 3)")
+        inputs_np = d['input_pose']
+        if inputs_np.ndim != 3 or inputs_np.shape[2] != 3:
+            raise ValueError(f"input_pose must be (N, J, 3), got {inputs_np.shape}")
+        if 'canonical_pose' in d:
+            gt_canon = torch.tensor(d['canonical_pose'], dtype=torch.float32)
+        poses = torch.tensor(inputs_np, dtype=torch.float32)
+    elif args.input is not None:
         import numpy as np
         poses_np = np.load(args.input)
-        assert poses_np.ndim == 3 and poses_np.shape[2] == 3, "Input must be (N, J, 3)"
+        # Allow (J, 3) single pose or (N, J, 3)
+        if poses_np.ndim == 2 and poses_np.shape[1] == 3:
+            poses_np = poses_np[None, :, :]
+        if poses_np.ndim != 3 or poses_np.shape[2] != 3:
+            raise ValueError(f"Input must be (N, J, 3) or (J, 3), got {poses_np.shape}")
         poses = torch.tensor(poses_np, dtype=torch.float32)
+    else:
+        logger.info("No input provided. Running a dummy example (batch=1)")
+        poses = torch.randn(1, model_cfg.get('input_joints', 17), 3)
 
     canonical, R = run_inference(model, poses, device)
     logger.info(f"Inference done. canonical shape: {tuple(canonical.shape)}, R shape: {tuple(R.shape)}")
@@ -176,8 +196,8 @@ def main():
 
     # Optional plotting
     if args.plot:
-        gt_canon = None
-        if args.gt is not None and os.path.exists(args.gt):
+        # If GT not already available via npz, optionally load from --gt
+        if gt_canon is None and args.gt is not None and os.path.exists(args.gt):
             try:
                 import numpy as np
                 gt_npz = np.load(args.gt)

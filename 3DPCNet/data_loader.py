@@ -16,6 +16,44 @@ from utils.rotation_utils import create_rotation_matrix_from_euler, apply_rotati
 from utils.pose_utils import center_pose_at
 
 
+class NpzPoseDataset(Dataset):
+    """
+    Top-level dataset for fully materialized splits (train/val/test) loaded from .npz.
+    Must be defined at module scope to be picklable by DataLoader workers on Windows.
+    """
+    def __init__(self, d):
+        self.inputs = torch.tensor(d['input_pose'], dtype=torch.float32)
+        self.canon = torch.tensor(d['canonical_pose'], dtype=torch.float32)
+        self.rot = torch.tensor(d['rotation_matrix'], dtype=torch.float32)
+        # Optional sequence metadata
+        self.env = d['env'] if 'env' in d else None
+        self.subject = d['subject'] if 'subject' in d else None
+        self.activity = d['activity'] if 'activity' in d else None
+        self.frame_idx = d['frame_idx'] if 'frame_idx' in d else None
+        self.sequence_idx = d['sequence_idx'] if 'sequence_idx' in d else None
+        self.rotation_idx = d['rotation_idx'] if 'rotation_idx' in d else None
+
+    def __len__(self):
+        return int(self.inputs.shape[0])
+
+    def __getitem__(self, i):
+        sample = {
+            'input_pose': self.inputs[i],
+            'canonical_pose': self.canon[i],
+            'rotation_matrix': self.rot[i]
+        }
+        if self.env is not None:
+            sample['sequence_info'] = {
+                'environment': str(self.env[i]),
+                'subject': str(self.subject[i]) if self.subject is not None else '',
+                'activity': str(self.activity[i]) if self.activity is not None else '',
+                'frame_idx': int(self.frame_idx[i]) if self.frame_idx is not None else -1,
+                'sequence_idx': int(self.sequence_idx[i]) if self.sequence_idx is not None else -1,
+                'rotation_idx': int(self.rotation_idx[i]) if self.rotation_idx is not None else -1
+            }
+        return sample
+
+
 @dataclass
 class AxisRemapConfig:
     enabled: bool = True
@@ -430,36 +468,6 @@ def create_data_loaders(
         logging.getLogger(__name__).info(f"[FullSplit] Loading precomputed datasets from {dir_path}")
         def _loader_from_npz(path):
             data = np.load(path, allow_pickle=False)
-            class NpzPoseDataset(Dataset):
-                def __init__(self, d):
-                    self.inputs = torch.tensor(d['input_pose'], dtype=torch.float32)
-                    self.canon = torch.tensor(d['canonical_pose'], dtype=torch.float32)
-                    self.rot = torch.tensor(d['rotation_matrix'], dtype=torch.float32)
-                    # Optional sequence metadata
-                    self.env = d['env'] if 'env' in d else None
-                    self.subject = d['subject'] if 'subject' in d else None
-                    self.activity = d['activity'] if 'activity' in d else None
-                    self.frame_idx = d['frame_idx'] if 'frame_idx' in d else None
-                    self.sequence_idx = d['sequence_idx'] if 'sequence_idx' in d else None
-                    self.rotation_idx = d['rotation_idx'] if 'rotation_idx' in d else None
-                def __len__(self):
-                    return self.inputs.shape[0]
-                def __getitem__(self, i):
-                    sample = {
-                        'input_pose': self.inputs[i],
-                        'canonical_pose': self.canon[i],
-                        'rotation_matrix': self.rot[i]
-                    }
-                    if self.env is not None:
-                        sample['sequence_info'] = {
-                            'environment': str(self.env[i]),
-                            'subject': str(self.subject[i]) if self.subject is not None else '',
-                            'activity': str(self.activity[i]) if self.activity is not None else '',
-                            'frame_idx': int(self.frame_idx[i]) if self.frame_idx is not None else -1,
-                            'sequence_idx': int(self.sequence_idx[i]) if self.sequence_idx is not None else -1,
-                            'rotation_idx': int(self.rotation_idx[i]) if self.rotation_idx is not None else -1
-                        }
-                    return sample
             return NpzPoseDataset(data)
         train_ds = _loader_from_npz(train_npz)
         val_ds = _loader_from_npz(val_npz)
