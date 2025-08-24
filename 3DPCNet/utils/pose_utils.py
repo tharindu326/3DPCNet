@@ -1,7 +1,4 @@
 import torch
-import torch.nn.functional as F
-import math
-from .rotation_utils import apply_rotation_to_pose, create_rotation_matrix_from_euler
 
 
 def normalize_pose_scale(pose_3d, root_joint_idx=0):
@@ -56,46 +53,10 @@ def center_pose_at(pose_3d, center_spec):
     return centered_pose, center_point
 
 
-def check_pose_front_facing(pose_3d, left_shoulder_idx=5, right_shoulder_idx=6):
-    """
-    Check if pose is front-facing using shoulder rule
-    Args:
-        pose_3d: (batch, joints, 3) 3D poses
-        left_shoulder_idx, right_shoulder_idx: joint indices
-    Returns:
-        is_front_facing: (batch,) boolean tensor
-    """
-    left_shoulder = pose_3d[:, left_shoulder_idx, :]   # (batch, 3)
-    right_shoulder = pose_3d[:, right_shoulder_idx, :] # (batch, 3)
-    # In front view: right shoulder x < left shoulder x
-    is_front_facing = right_shoulder[:, 0] < left_shoulder[:, 0]
     
-    return is_front_facing
 
 
-def augment_pose_with_rotation(pose_3d, max_angle_deg=60):
-    """
-    Augment pose with random rotation for training
-    Args:
-        pose_3d: (batch, joints, 3) 3D poses
-        max_angle_deg: maximum rotation angle in degrees
-    Returns:
-        rotated pose and rotation matrix used
-    """
-    batch_size = pose_3d.shape[0]
-    device = pose_3d.device
-    # Generate random rotation angles
-    max_angle_rad = math.radians(max_angle_deg)
-    angles = (torch.rand(batch_size, 3, device=device) - 0.5) * 2 * max_angle_rad
-    # Create rotation matrices
-    rotation_matrices = []
-    for i in range(batch_size):
-        R = create_rotation_matrix_from_euler(angles[i]).to(device)
-        rotation_matrices.append(R)
-    rotation_matrices = torch.stack(rotation_matrices, dim=0)
-    # Apply rotations
-    rotated_pose = apply_rotation_to_pose(pose_3d, rotation_matrices)
-    return rotated_pose, rotation_matrices
+    
 
 
 def denormalize_pose(normalized_pose, scale, root_pos):

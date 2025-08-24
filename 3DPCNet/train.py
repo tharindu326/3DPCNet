@@ -572,7 +572,6 @@ if __name__ == "__main__":
         data_root=data_root,
         batch_size=int(train_cfg.get('batch_size', 32)),
         environments=environments_to_scan,
-        max_rotation_angle=float(data_cfg.get('max_rotation_angle_deg', 60.0)),
         num_rotations_per_pose=int(data_cfg.get('num_rotations_per_pose', 2)),
         frames_per_sequence=int(data_cfg.get('frames_per_sequence', 10)),
         num_workers=int(data_cfg.get('num_workers', 4)),

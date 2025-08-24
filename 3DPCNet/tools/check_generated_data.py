@@ -9,7 +9,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import os
 import random
 
-def load_test_data(test_dir="dataset/splits/S3_full"):
+def load_test_data(test_dir="dataset/splits/S3_split_250824"):
     """Load test data from npz file"""
     test_file = os.path.join(test_dir, "test.npz")
     

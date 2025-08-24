@@ -13,7 +13,7 @@ import math
 from torch.utils.data import Subset
 import logging
 from utils.rotation_utils import create_rotation_matrix_from_euler, apply_rotation_to_pose
-from utils.pose_utils import check_pose_front_facing, center_pose_at
+from utils.pose_utils import center_pose_at
 
 
 @dataclass
@@ -66,9 +66,7 @@ class MMFiCanonPose(Dataset):
                  frame_sampling: str = 'random',  # 'random', 'uniform', 'all'
                  frames_per_sequence: int = 1,
                  min_sequence_length: int = 30,
-                 max_rotation_angle: float = 60.0,  # Maximum rotation angle in degrees
                  num_rotations_per_pose: int = 1,  # Number of rotated versions per canonical pose
-                 ensure_front_facing: bool = True,  # Ensure poses face front after rotation
                  center_spec: Optional[object] = None,
                  transform=None,
                  axis_remap_enabled: bool = True,
@@ -84,9 +82,7 @@ class MMFiCanonPose(Dataset):
             frame_sampling: How to sample frames ('random', 'uniform', 'all')
             frames_per_sequence: Number of frames to sample per sequence
             min_sequence_length: Minimum sequence length to include
-            max_rotation_angle: Maximum rotation angle in degrees for augmentation
             num_rotations_per_pose: Number of rotated versions per canonical pose
-            ensure_front_facing: Whether to ensure poses face front after rotation
             center_spec: Optional joint index or joint pair [i, j] to center poses at
             transform: Optional transforms to apply
             axis_remap_enabled: Whether to remap axes on load
@@ -97,9 +93,7 @@ class MMFiCanonPose(Dataset):
         self.frame_sampling = frame_sampling
         self.frames_per_sequence = frames_per_sequence
         self.min_sequence_length = min_sequence_length
-        self.max_rotation_angle = max_rotation_angle
         self.num_rotations_per_pose = num_rotations_per_pose
-        self.ensure_front_facing = ensure_front_facing
         self.transform = transform
         # Centering: int index or pair [i, j] (e.g., [11, 12] for pelvis midpoint)
         self.center_spec = center_spec if center_spec is not None else [11, 12]
@@ -126,7 +120,6 @@ class MMFiCanonPose(Dataset):
             f"MMFiCanonPose init: center_spec={self.center_spec}, "
             f"axis_remap_enabled={getattr(self, 'axis_remap_enabled', True)}, "
             f"axis_order={getattr(self, 'axis_remap_order', (2,0,1))}, axis_flip={getattr(self, 'axis_remap_flip', (1,-1,-1))}, "
-            f"ensure_front_facing={self.ensure_front_facing}, max_rotation_deg={self.max_rotation_angle}, "
             f"frames_per_sequence={self.frames_per_sequence}, num_rotations_per_pose={self.num_rotations_per_pose}, "
             f"frame_sampling={self.frame_sampling}, data_root={str(self.data_root)}, environments={self.environments}"
         )
@@ -141,6 +134,29 @@ class MMFiCanonPose(Dataset):
     def generate_training_sample(self, canonical_pose: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate training sample by applying random rotation to canonical pose
+        
+        Angles and order:
+        - yaw: rotation around Z (turn left/right)
+        - pitch: rotation around Y (look up/down)
+        - roll: rotation around X (tilt/horizon)
+        Your create_rotation_matrix_from_euler expects [pitch, yaw, roll], and builds
+        R = Rz(yaw) · Ry(pitch) · Rx(roll).
+        
+        Mixture used in this function (one draw per sample):
+        - Base (75%):
+          yaw ∼ Uniform(−70°, +70°) → front-ish views
+          pitch ∼ N(0, 12°) clipped to [−20°, +20°] → mild up/down
+          roll ∼ N(0, 4°) clipped to [−8°, +8°] → small horizon tilt
+        - Profile (15%):
+          yaw ≈ ±90° ± 10° → strong side views
+          pitch ∼ N(0, 8°) clip [−15°, +15°], roll ∼ N(0, 3°) clip [−6°, +6°]
+        - Back (10%):
+          yaw ≈ 180° ± 20° → back views; pitch/roll small as above
+        
+        Hard bounds (after sampling):
+        - |pitch| ≤ 25° to avoid ground/ceiling angles
+        - |roll|  ≤ 12° to avoid unrealistic horizon tilt
+        This prevents "camera-on-the-floor" or upside‑down views while keeping useful variation.
         Args:
             canonical_pose: (17, 3) canonical 3D pose
         Returns:
@@ -153,9 +169,32 @@ class MMFiCanonPose(Dataset):
         # Center canonical pose around specified joint or joint pair
         canonical_pose_centered, center_point = center_pose_at(canonical_pose_batch, self.center_spec)
         
-        # Generate random rotation angles
-        max_angle_rad = math.radians(self.max_rotation_angle)
-        angles = (torch.rand(3) - 0.5) * 2 * max_angle_rad
+        # Generate practical camera-like angles (yaw, pitch, roll)
+        # Mixture: 75% base, 15% profile (±90°), 10% back (~180°)
+        mode = torch.rand(1).item()
+        if mode < 0.75:
+            yaw_deg = float(torch.empty(1).uniform_(-70.0, 70.0))
+            pitch_deg = float(torch.clamp(torch.randn(1) * 12.0, -20.0, 20.0))
+            roll_deg = float(torch.clamp(torch.randn(1) * 4.0,  -8.0,  8.0))
+        elif mode < 0.90:
+            yaw_deg = (90.0 if torch.rand(1).item() < 0.5 else -90.0) + float(torch.randn(1) * 10.0)
+            pitch_deg = float(torch.clamp(torch.randn(1) * 8.0,  -15.0, 15.0))
+            roll_deg = float(torch.clamp(torch.randn(1) * 3.0,   -6.0,  6.0))
+        else:
+            yaw_deg = 180.0 + float(torch.randn(1) * 20.0)
+            pitch_deg = float(torch.clamp(torch.randn(1) * 8.0,  -15.0, 15.0))
+            roll_deg = float(torch.clamp(torch.randn(1) * 3.0,   -6.0,  6.0))
+
+        # Hard bounds (reject extreme up/down or tilted cameras)
+        pitch_deg = max(-25.0, min(25.0, pitch_deg))
+        roll_deg  = max(-12.0, min(12.0,  roll_deg))
+
+        # Convert to radians; create_rotation_matrix_from_euler expects [pitch, yaw, roll]
+        angles = torch.tensor([
+            math.radians(pitch_deg),
+            math.radians(yaw_deg),
+            math.radians(roll_deg)
+        ], dtype=torch.float32)
         
         # Create rotation matrix
         rotation_matrix = create_rotation_matrix_from_euler(angles)
@@ -165,16 +204,8 @@ class MMFiCanonPose(Dataset):
         rotated_pose_batch = apply_rotation_to_pose(canonical_pose_centered, rotation_matrix_batch)
         rotated_pose = rotated_pose_batch.squeeze(0)  # (17, 3)
         
-        # Ensure front-facing if required
-        if self.ensure_front_facing:
-            is_front = check_pose_front_facing(rotated_pose_batch)
-            if not is_front[0]:
-                # Apply 180-degree Y rotation to make front-facing
-                flip_rotation = create_rotation_matrix_from_euler([0, math.pi, 0])
-                rotated_pose = torch.matmul(rotated_pose, flip_rotation.T)
-                rotation_matrix = torch.matmul(flip_rotation, rotation_matrix)
-        
         # Return centered canonical pose as ground truth
+        
         return rotated_pose, canonical_pose_centered.squeeze(0), rotation_matrix
     
     def _load_sequences(self) -> List[Dict]:
@@ -369,9 +400,7 @@ def create_data_loaders(
     frame_sampling: str = 'random',
     frames_per_sequence: int = 1,
     min_sequence_length: int = 30,
-    max_rotation_angle: float = 60.0,
     num_rotations_per_pose: int = 1,
-    ensure_front_facing: bool = True,
     center_spec: Optional[object] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
@@ -455,9 +484,7 @@ def create_data_loaders(
             frame_sampling=frame_sampling,
             frames_per_sequence=frames_per_sequence,
             min_sequence_length=min_sequence_length,
-            max_rotation_angle=max_rotation_angle,
             num_rotations_per_pose=num_rotations_per_pose,
-            ensure_front_facing=ensure_front_facing,
             center_spec=center_spec,
             transform=None,
             axis_remap_enabled=(axis_remap_cfg.enabled if axis_remap_cfg else True),
@@ -651,7 +678,6 @@ def main():
         train_loader, val_loader, test_loader = create_data_loaders(
             data_root="/path/to/MM-Fi",
             batch_size=32,
-            max_rotation_angle=60.0,
             num_rotations_per_pose=2
         )
         """)
@@ -666,7 +692,6 @@ def main():
             frame_sampling='random',
             frames_per_sequence=50,
             num_rotations_per_pose=6,
-            max_rotation_angle=120.0
         )
         
         logger.info(f"Dataset created successfully!")

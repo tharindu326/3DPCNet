@@ -13,9 +13,7 @@
 # )
 
 # from .pose_utils import (
-#     normalize_pose_scale,
-#     check_pose_front_facing,
-#     augment_pose_with_rotation
+#     normalize_pose_scale
 # )
 
 # from .config_utils import (
@@ -40,8 +38,6 @@
     
 #     # Pose utilities
 #     "normalize_pose_scale",
-#     "check_pose_front_facing", 
-#     "augment_pose_with_rotation",
     
 #     # Config utilities
 #     "load_config",

@@ -25,8 +25,6 @@ data:
     enabled: true
     new_from_old: [2, 0, 1]   # newX=oldZ, newY=oldX, newZ=oldY (signs below)
     flip: [1, -1, -1]         # multiply per-axis after reordering
-  # Augmentation
-  max_rotation_angle_deg: 120
   num_rotations_per_pose: 6
   frames_per_sequence: 50
   # Splitting
@@ -45,8 +43,8 @@ data:
     s3_train_envs: ["E01", "E02", "E03"]
     s3_test_envs: ["E04"]
     load_from_path: true   # true => load ONLY from load_dir; false => always generate (and optionally save)
-    load_dir: "dataset/splits/S3_full"  # directory containing train.npz/val.npz/test.npz
-    save_dir: ""  # directory to write train.npz/val.npz/test.npz
+    load_dir: "dataset/splits/S3_split_250824"  # directory containing train.npz/val.npz/test.npz
+    # save_dir: "dataset/splits/S3_split_250824"  # directory to write train.npz/val.npz/test.npz
 
 logging:
   log_level: "INFO"
