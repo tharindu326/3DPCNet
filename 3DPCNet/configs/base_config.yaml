@@ -43,8 +43,8 @@ data:
     s3_train_envs: ["E01", "E02", "E03"]
     s3_test_envs: ["E04"]
     load_from_path: true   # true => load ONLY from load_dir; false => always generate (and optionally save)
-    load_dir: "dataset/splits/S3_split_250824"  # directory containing train.npz/val.npz/test.npz
-    # save_dir: "dataset/splits/S3_split_250824"  # directory to write train.npz/val.npz/test.npz
+    load_dir: "dataset/splits/S3_split_250824_2"  # directory containing train.npz/val.npz/test.npz
+    # save_dir: "dataset/splits/S3_split_250824_2"  # directory to write train.npz/val.npz/test.npz
 
 logging:
   log_level: "INFO"

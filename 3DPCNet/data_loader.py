@@ -169,7 +169,7 @@ class MMFiCanonPose(Dataset):
         # Center canonical pose around specified joint or joint pair
         canonical_pose_centered, center_point = center_pose_at(canonical_pose_batch, self.center_spec)
         
-        # Generate practical camera-like angles (yaw, pitch, roll)
+        # Generate practical camera-like angles (yaw around Z, pitch around Y, roll around X)
         # Mixture: 75% base, 15% profile (±90°), 10% back (~180°)
         mode = torch.rand(1).item()
         if mode < 0.75:
@@ -189,11 +189,11 @@ class MMFiCanonPose(Dataset):
         pitch_deg = max(-25.0, min(25.0, pitch_deg))
         roll_deg  = max(-12.0, min(12.0,  roll_deg))
 
-        # Convert to radians; create_rotation_matrix_from_euler expects [pitch, yaw, roll]
+        # Convert to radians; create_rotation_matrix_from_euler expects [roll (X), pitch (Y), yaw (Z)]
         angles = torch.tensor([
+            math.radians(roll_deg),
             math.radians(pitch_deg),
-            math.radians(yaw_deg),
-            math.radians(roll_deg)
+            math.radians(yaw_deg)
         ], dtype=torch.float32)
         
         # Create rotation matrix
