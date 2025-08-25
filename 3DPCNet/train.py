@@ -20,7 +20,7 @@ from models.model import create_pose_canonicalization_model, PoseCanonicalizatio
 from data_loader import create_data_loaders
 from models.losses import PoseCanonicalizationLoss
 from utils.config_utils import ConfigManager
-from evaluate import evaluate_pose_canonicalization
+from evaluate import evaluate_pose_canonicalization, compute_similarity_transform
 
 
 class PCTrainer:
@@ -158,18 +158,25 @@ class PCTrainer:
             })
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
     
-    def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
+    def train_epoch(self, train_loader: DataLoader, epoch: int = None, total_epochs: int = None) -> Dict[str, float]:
         """
         Train for one epoch
         Args:
             train_loader: DataLoader from create_data_loaders()
+            epoch: Current epoch number (for display)
+            total_epochs: Total number of epochs (for display)
         Returns:
             Dictionary with average losses for the epoch
         """
         total_losses = {}
         num_batches = 0
         
-        progress_bar = tqdm(train_loader, desc="Training")
+        # Create epoch description for progress bar
+        epoch_desc = f"Training"
+        if epoch is not None and total_epochs is not None:
+            epoch_desc = f"Epoch {epoch}/{total_epochs}: Training"
+        
+        progress_bar = tqdm(train_loader, desc=epoch_desc)
         
         for batch in progress_bar:
             # Training step with pre-generated pairs
@@ -195,18 +202,25 @@ class PCTrainer:
         avg_losses = {key: value / num_batches for key, value in total_losses.items()}
         return avg_losses
     
-    def validate_epoch(self, val_loader: DataLoader) -> Dict[str, float]:
+    def validate_epoch(self, val_loader: DataLoader, epoch: int = None, total_epochs: int = None) -> Dict[str, float]:
         """
         Validate for one epoch
         Args:
             val_loader: Validation DataLoader from create_data_loaders()
+            epoch: Current epoch number (for display)
+            total_epochs: Total number of epochs (for display)
         Returns:
             Dictionary with average losses for the epoch
         """
         total_losses = {}
         num_batches = 0
         
-        progress_bar = tqdm(val_loader, desc="Validation")
+        # Create epoch description for progress bar
+        epoch_desc = f"Validation"
+        if epoch is not None and total_epochs is not None:
+            epoch_desc = f"Epoch {epoch}/{total_epochs}: Validation"
+        
+        progress_bar = tqdm(val_loader, desc=epoch_desc)
         
         for batch in progress_bar:
             # Validation step with pre-generated pairs
@@ -267,9 +281,9 @@ class PCTrainer:
         for epoch in range(num_epochs):
             self.logger.info(f"Epoch {epoch + 1}/{num_epochs}")
             # Training
-            train_losses = self.train_epoch(train_loader)
+            train_losses = self.train_epoch(train_loader, epoch + 1, num_epochs)
             # Validation
-            val_losses = self.validate_epoch(val_loader)
+            val_losses = self.validate_epoch(val_loader, epoch + 1, num_epochs)
             # Learning rate scheduling
             self.scheduler.step()
             # Update history
@@ -431,16 +445,28 @@ class PCTrainer:
                 pose_error = torch.mean(torch.norm(pred_canonical - target_canonical, dim=-1), dim=1)  # (batch,)
                 rotation_error = torch.norm(pred_rotation_matrix - target_rotations, dim=(1, 2))  # (batch,)
                 
-                # Compute similarity transform metrics
-                eval_metrics = evaluate_pose_canonicalization(
-                    pred_canonical, target_canonical, pred_rotation_matrix, target_rotations
-                )
+                # Compute per-sample MPJPE and PA-MPJPE for proper accumulation
+                batch_mpjpe = []
+                batch_pampjpe = []
+                
+                for i in range(batch_size):
+                    # Per-sample pose error (MPJPE)
+                    sample_mpjpe = torch.mean(torch.norm(pred_canonical[i] - target_canonical[i], dim=-1))
+                    batch_mpjpe.append(sample_mpjpe.item())
+                    
+                    # Per-sample PA-MPJPE using similarity transform
+                    sample_pred = pred_canonical[i].cpu().numpy()  # (17, 3) - correct shape
+                    sample_gt = target_canonical[i].cpu().numpy()   # (17, 3) - correct shape
+                    _, Z, T, b, c = compute_similarity_transform(sample_gt, sample_pred, compute_optimal_scale=True)
+                    sample_pred_aligned = (b * sample_pred.dot(T)) + c
+                    sample_pampjpe = np.mean(np.sqrt(np.sum(np.square(sample_pred_aligned - sample_gt), axis=1)))
+                    batch_pampjpe.append(sample_pampjpe)
                 
                 # Accumulate metrics
                 total_metrics['pose_error_mm'] += torch.sum(pose_error).item() * 1000.0
                 total_metrics['rotation_error'] += torch.sum(rotation_error).item()
-                total_metrics['mpjpe'] += eval_metrics['mpjpe']
-                total_metrics['pampjpe'] += eval_metrics['pampjpe']
+                total_metrics['mpjpe'] += sum(batch_mpjpe)
+                total_metrics['pampjpe'] += sum(batch_pampjpe)
                 
                 num_samples += batch_size
         
