@@ -443,7 +443,10 @@ class PCTrainer:
                 
                 # Compute metrics
                 pose_error = torch.mean(torch.norm(pred_canonical - target_canonical, dim=-1), dim=1)  # (batch,)
-                rotation_error = torch.norm(pred_rotation_matrix - target_rotations, dim=(1, 2))  # (batch,)
+                rotation_error = torch.norm(pred_rotation_matrix - target_rotations, dim=(1, 2))  # (batch,) in radians
+                
+                # Convert rotation error to degrees for consistency with validation
+                rotation_error_deg = rotation_error * 180.0 / np.pi
                 
                 # Compute per-sample MPJPE and PA-MPJPE for proper accumulation
                 batch_mpjpe = []
@@ -464,9 +467,9 @@ class PCTrainer:
                 
                 # Accumulate metrics
                 total_metrics['pose_error_mm'] += torch.sum(pose_error).item() * 1000.0
-                total_metrics['rotation_error'] += torch.sum(rotation_error).item()
-                total_metrics['mpjpe'] += sum(batch_mpjpe)
-                total_metrics['pampjpe'] += sum(batch_pampjpe)
+                total_metrics['rotation_error'] += torch.sum(rotation_error_deg).item()  # Now in degrees
+                total_metrics['mpjpe'] += sum(batch_mpjpe) * 1000.0  # Convert to mm
+                total_metrics['pampjpe'] += sum(batch_pampjpe) * 1000.0  # Convert to mm
                 
                 num_samples += batch_size
         
