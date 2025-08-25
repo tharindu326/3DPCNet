@@ -20,6 +20,7 @@ from models.model import create_pose_canonicalization_model, PoseCanonicalizatio
 from data_loader import create_data_loaders
 from models.losses import PoseCanonicalizationLoss
 from utils.config_utils import ConfigManager
+from evaluate import evaluate_pose_canonicalization
 
 
 class PCTrainer:
@@ -143,9 +144,17 @@ class PCTrainer:
             # Rotation error in degrees
             rotation_error_rad = loss_dict['rotation_loss']
             rotation_error_deg = rotation_error_rad * 180.0 / np.pi
+            
+            # Compute similarity transform metrics
+            eval_metrics = evaluate_pose_canonicalization(
+                pred_canonical, target_canonical, pred_rotation_matrix, target_rotations
+            )
+            
             loss_dict.update({
                 'pose_error_mm': pose_error.item() * 1000,  # Convert to mm
-                'rotation_error_deg': rotation_error_deg
+                'rotation_error_deg': rotation_error_deg,
+                'mpjpe': eval_metrics['mpjpe'],
+                'pampjpe': eval_metrics['pampjpe']
             })
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
     
@@ -212,7 +221,9 @@ class PCTrainer:
             progress_bar.set_postfix({
                 'val_loss': f"{losses['total_loss']:.4f}",
                 'pose_err': f"{losses['pose_error_mm']:.1f}mm",
-                'rot_err': f"{losses['rotation_error_deg']:.1f}°"
+                'rot_err': f"{losses['rotation_error_deg']:.1f}°",
+                'mpjpe': f"{losses['mpjpe']:.3f}",
+                'pampjpe': f"{losses['pampjpe']:.3f}"
             })
         # Average losses
         avg_losses = {key: value / num_batches for key, value in total_losses.items()}
@@ -246,7 +257,9 @@ class PCTrainer:
             'val_pose_loss': [],
             'val_rotation_loss': [],
             'val_pose_error_mm': [],
-            'val_rotation_error_deg': []
+            'val_rotation_error_deg': [],
+            'val_mpjpe': [],
+            'val_pampjpe': []
         }
         
         best_val_loss = float('inf')
@@ -268,6 +281,8 @@ class PCTrainer:
             history['val_rotation_loss'].append(val_losses.get('rotation_loss', float('nan')))
             history['val_pose_error_mm'].append(val_losses['pose_error_mm'])
             history['val_rotation_error_deg'].append(val_losses['rotation_error_deg'])
+            history['val_mpjpe'].append(val_losses['mpjpe'])
+            history['val_pampjpe'].append(val_losses['pampjpe'])
             # Save best model
             if save_best and val_losses['total_loss'] < best_val_loss:
                 best_val_loss = val_losses['total_loss']
@@ -293,7 +308,9 @@ class PCTrainer:
                 f"Train Loss: {train_losses['total_loss']:.4f}, "
                 f"Val Loss: {val_losses['total_loss']:.4f}, "
                 f"Pose Error: {val_losses['pose_error_mm']:.1f}mm, "
-                f"Rotation Error: {val_losses['rotation_error_deg']:.1f}°"
+                f"Rotation Error: {val_losses['rotation_error_deg']:.1f}°, "
+                f"MPJPE: {val_losses['mpjpe']:.3f}, "
+                f"PA-MPJPE: {val_losses['pampjpe']:.3f}"
             )
         # Save last
         if save_last:
@@ -327,8 +344,12 @@ class PCTrainer:
             plt.subplot(3, 2, 4)
             plt.plot(epochs, history['val_pose_error_mm'], label='val')
             plt.title('Pose Error (mm)'); plt.xlabel('Epoch'); plt.ylabel('mm')
-            # Rotation error
+            # MPJPE
             plt.subplot(3, 2, 5)
+            plt.plot(epochs, history['val_mpjpe'], label='val')
+            plt.title('MPJPE'); plt.xlabel('Epoch'); plt.ylabel('Error')
+            # Rotation error
+            plt.subplot(3, 2, 6)
             plt.plot(epochs, history['val_rotation_error_deg'], label='val')
             plt.title('Rotation Error (deg)'); plt.xlabel('Epoch'); plt.ylabel('deg')
             plt.tight_layout()
@@ -385,7 +406,12 @@ class PCTrainer:
             Evaluation metrics
         """
         self.model.eval()
-        total_metrics = {"pose_error_mm": 0.0, "rotation_error": 0.0}
+        total_metrics = {
+            "pose_error_mm": 0.0, 
+            "rotation_error": 0.0,
+            "mpjpe": 0.0,
+            "pampjpe": 0.0
+        }
         num_samples = 0
         
         with torch.no_grad():
@@ -405,9 +431,16 @@ class PCTrainer:
                 pose_error = torch.mean(torch.norm(pred_canonical - target_canonical, dim=-1), dim=1)  # (batch,)
                 rotation_error = torch.norm(pred_rotation_matrix - target_rotations, dim=(1, 2))  # (batch,)
                 
+                # Compute similarity transform metrics
+                eval_metrics = evaluate_pose_canonicalization(
+                    pred_canonical, target_canonical, pred_rotation_matrix, target_rotations
+                )
+                
                 # Accumulate metrics
                 total_metrics['pose_error_mm'] += torch.sum(pose_error).item() * 1000.0
                 total_metrics['rotation_error'] += torch.sum(rotation_error).item()
+                total_metrics['mpjpe'] += eval_metrics['mpjpe']
+                total_metrics['pampjpe'] += eval_metrics['pampjpe']
                 
                 num_samples += batch_size
         
@@ -614,4 +647,7 @@ if __name__ == "__main__":
     test_metrics = trainer.evaluate(test_loader)
     logger.info("Test set results:")
     for key, value in test_metrics.items():
-        logger.info(f"  {key}: {value:.4f}")
+        if key in ['mpjpe', 'pampjpe']:
+            logger.info(f"  {key}: {value:.6f}")
+        else:
+            logger.info(f"  {key}: {value:.4f}")
