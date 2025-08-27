@@ -2,6 +2,7 @@ __pycache__/
 checkpoints/
 plots/
 test_data/
+models/
 
 
 *.pt
