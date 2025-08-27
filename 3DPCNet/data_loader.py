@@ -466,6 +466,24 @@ def create_data_loaders(
         if not (os.path.exists(train_npz) and os.path.exists(val_npz) and os.path.exists(test_npz)):
             raise FileNotFoundError(f"[FullSplit] Missing train/val/test npz in {dir_path}")
         logging.getLogger(__name__).info(f"[FullSplit] Loading precomputed datasets from {dir_path}")
+        
+        # Load and display metadata from train.npz file
+        train_data = np.load(train_npz, allow_pickle=False)
+        if 'split_setting' in train_data:
+            setting = train_data['split_setting'].item()
+            
+            if setting == 'S1':
+                logging.getLogger(__name__).info(f"[Splits:S1] train_seq={train_data['train_sequences'].item()}, val_seq={train_data['val_sequences'].item()}, test_seq={train_data['test_sequences'].item()}")
+            elif setting == 'S2':
+                logging.getLogger(__name__).info(f"[Splits:S2] train_seq={train_data['train_sequences'].item()}, val_seq={train_data['val_sequences'].item()}, test_seq={train_data['test_sequences'].item()}")
+            elif setting == 'S3':
+                logging.getLogger(__name__).info(f"[Splits:S3] total_seq={train_data['total_sequences'].item()}, train_seq={train_data['train_sequences'].item()}, val_seq={train_data['val_sequences'].item()}, test_seq={train_data['test_sequences'].item()}")
+            
+            # Display data configuration
+            logging.getLogger(__name__).info(f"[DataConfig] center_spec={train_data['center_spec'].item()}, axis_remap={train_data['axis_remap_enabled'].item()}, rotations_per_pose={train_data['num_rotations_per_pose'].item()}, frames_per_seq={train_data['frames_per_sequence'].item()}")
+        else:
+            logging.getLogger(__name__).warning(f"[FullSplit] No metadata found in train.npz")
+            
         def _loader_from_npz(path):
             data = np.load(path, allow_pickle=False)
             return NpzPoseDataset(data)
@@ -637,11 +655,25 @@ def create_data_loaders(
                              activity=np.array(activity),
                              frame_idx=np.array(frame_idx_arr, dtype=np.int64),
                              sequence_idx=np.array(seq_idx_arr, dtype=np.int64),
-                             rotation_idx=np.array(rot_idx_arr, dtype=np.int64))
+                             rotation_idx=np.array(rot_idx_arr, dtype=np.int64),
+                             # Metadata about the split
+                             split_setting=np.array([setting]),
+                             total_sequences=np.array([len(sequences)]),
+                             train_sequences=np.array([len(train_seq)]),
+                             val_sequences=np.array([len(val_seq)]),
+                             test_sequences=np.array([len(test_seq)]),
+                             # Data configuration parameters
+                             center_spec=np.array([full_dataset.center_spec]),
+                             axis_remap_enabled=np.array([full_dataset.axis_remap_enabled]),
+                             axis_remap_order=np.array(full_dataset.axis_remap_order),
+                             axis_remap_flip=np.array(full_dataset.axis_remap_flip),
+                             num_rotations_per_pose=np.array([full_dataset.num_rotations_per_pose]),
+                             frames_per_sequence=np.array([full_dataset.frames_per_sequence]),
+                             frame_sampling=np.array([full_dataset.frame_sampling]))
                 _dump(os.path.join(split_cfg.save_dir, 'train.npz'), train_indices)
                 _dump(os.path.join(split_cfg.save_dir, 'val.npz'), val_indices)
                 _dump(os.path.join(split_cfg.save_dir, 'test.npz'), test_indices)
-                logging.getLogger(__name__).info(f"[FullSplit] Saved train/val/test npz to {split_cfg.save_dir}")
+                logging.getLogger(__name__).info(f"[FullSplit] Saved train/val/test npz files with embedded metadata to {split_cfg.save_dir}")
             except Exception as e:
                 logging.getLogger(__name__).warning(f"[FullSplit] Failed to save materialized datasets: {e}")
     

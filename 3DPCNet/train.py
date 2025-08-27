@@ -34,8 +34,7 @@ class PCTrainer:
                  pose_weight: float = 1.0,
                  rotation_weight: float = 1.0,
                  weight_decay: float = 1e-4,
-                 scheduler_step_size: int = 30,
-                 scheduler_gamma: float = 0.1,
+                 scheduler_config: dict = None,
                  log_interval: int = 10):
         """
         Initialize trainer
@@ -45,6 +44,7 @@ class PCTrainer:
             learning_rate: Learning rate for optimizer
             pose_weight: Weight for pose reconstruction loss
             rotation_weight: Weight for rotation loss
+            scheduler_config: Dictionary containing scheduler configuration
         """
         self.model = model.to(device)
         self.device = device
@@ -60,11 +60,36 @@ class PCTrainer:
         )
         
         # Learning rate scheduler
-        self.scheduler = optim.lr_scheduler.StepLR(
-            self.optimizer, 
-            step_size=scheduler_step_size, 
-            gamma=scheduler_gamma
-        )
+        if scheduler_config is None:
+            scheduler_config = {"type": "StepLR", "step_size": 30, "gamma": 0.1}
+        
+        self.scheduler_type = scheduler_config.get("type", "StepLR")
+        
+        if self.scheduler_type == "StepLR":
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, 
+                step_size=scheduler_config.get("step_size", 30), 
+                gamma=scheduler_config.get("gamma", 0.1)
+            )
+        elif self.scheduler_type == "ReduceLROnPlateau":
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',
+                factor=scheduler_config.get("factor", 0.5),
+                patience=scheduler_config.get("patience", 10),
+                min_lr=scheduler_config.get("min_lr", 1e-7),
+                verbose=True
+            )
+        elif self.scheduler_type == "CosineAnnealingLR":
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=scheduler_config.get("T_max", 100),
+                eta_min=scheduler_config.get("eta_min", 1e-7)
+            )
+        else:
+            raise ValueError(f"Unsupported scheduler type: {self.scheduler_type}. "
+                           f"Supported types: StepLR, ReduceLROnPlateau, CosineAnnealingLR")
+        
         self.logger = logging.getLogger(__name__)
         self.log_interval = max(1, int(log_interval))
     
@@ -280,12 +305,18 @@ class PCTrainer:
         
         for epoch in range(num_epochs):
             self.logger.info(f"Epoch {epoch + 1}/{num_epochs}")
+            # Log current learning rate
+            current_lr = self.optimizer.param_groups[0]['lr']
+            self.logger.info(f"Current Learning Rate: {current_lr:.2e}")
             # Training
             train_losses = self.train_epoch(train_loader, epoch + 1, num_epochs)
             # Validation
             val_losses = self.validate_epoch(val_loader, epoch + 1, num_epochs)
             # Learning rate scheduling
-            self.scheduler.step()
+            if self.scheduler_type == "ReduceLROnPlateau":
+                self.scheduler.step(val_losses['total_loss'])
+            else:
+                self.scheduler.step()
             # Update history
             history['train_total_loss'].append(train_losses['total_loss'])
             history['train_pose_loss'].append(train_losses.get('pose_loss', float('nan')))
@@ -553,13 +584,46 @@ if __name__ == "__main__":
         pose_weight=float(loss_cfg.get('pose_weight', 1.0)),
         rotation_weight=float(loss_cfg.get('rotation_weight', 1.0)),
         weight_decay=float(train_cfg.get('weight_decay', 1e-4)),
-        scheduler_step_size=int(train_cfg.get('scheduler_step_size', 30)),
-        scheduler_gamma=float(train_cfg.get('scheduler_gamma', 0.1)),
+        scheduler_config=train_cfg.get('scheduler', {}),
         log_interval=int(cfg_mgr.get('logging.log_interval', 10))
     )
 
     logger.info("Trainer created successfully")
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    # Log complete model configuration
+    logger.info("Model configuration:")
+    for key, value in model_cfg.items():
+        logger.info(f"  {key}: {value}")
+    
+    # Log complete training configuration
+    logger.info("Training configuration:")
+    for key, value in train_cfg.items():
+        if key == 'scheduler':
+            # Special handling for scheduler config
+            scheduler_cfg = value
+            scheduler_type = scheduler_cfg.get('type', 'StepLR')
+            logger.info(f"  {key}:")
+            logger.info(f"    type: {scheduler_type}")
+            
+            # Log only relevant parameters for the selected scheduler
+            if scheduler_type == "StepLR":
+                logger.info(f"    step_size: {scheduler_cfg.get('step_size', 20)}")
+                logger.info(f"    gamma: {scheduler_cfg.get('gamma', 0.8)}")
+            elif scheduler_type == "ReduceLROnPlateau":
+                logger.info(f"    patience: {scheduler_cfg.get('patience', 10)}")
+                logger.info(f"    factor: {scheduler_cfg.get('factor', 0.5)}")
+                logger.info(f"    min_lr: {scheduler_cfg.get('min_lr', 1e-7)}")
+            elif scheduler_type == "CosineAnnealingLR":
+                logger.info(f"    T_max: {scheduler_cfg.get('T_max', 100)}")
+                logger.info(f"    eta_min: {scheduler_cfg.get('eta_min', 1e-7)}")
+        else:
+            logger.info(f"  {key}: {value}")
+    
+    # Log complete loss configuration
+    logger.info("Loss configuration:")
+    for key, value in loss_cfg.items():
+        logger.info(f"  {key}: {value}")
 
     if args.sanity_check:
         logger.info("Running sanity check...")
@@ -602,7 +666,7 @@ if __name__ == "__main__":
         setting=split_cfg_dict.get('setting', None),
         seed=int(split_cfg_dict.get('seed', 42)),
         s1_train_ratio=float(split_cfg_dict.get('s1_train_ratio', 0.75)),
-        val_ratio_from_train=float(split_cfg_dict.get('s1_val_ratio_from_train', 0.1)),
+        val_ratio_from_train=float(split_cfg_dict.get('val_ratio_from_train', 0.1)),
         s2_train_subjects=split_cfg_dict.get('s2_train_subjects', None),
         s2_test_subjects=split_cfg_dict.get('s2_test_subjects', None),
         s3_train_envs=split_cfg_dict.get('s3_train_envs', None),

@@ -3,48 +3,65 @@ model:
   input_joints: 17  # Custom format format
   encoder_type: "mlp"  # Options: mlp, gcn, transformer
   rotation_type: "6d"  # Options: 6d, quaternion, matrix
-  hidden_dim: 512
-  encoder_output_dim: 256
-  dropout: 0.1
+  hidden_dim: 768
+  encoder_output_dim: 384
+  dropout: 0.15
   predict_mode: "rotation_plus_residual"  # rotation_only | rotation_plus_residual
 
 training:
-  learning_rate: 1e-4
-  batch_size: 256
-  num_epochs: 50
-  weight_decay: 1e-4
-  scheduler_step_size: 20
-  scheduler_gamma: 0.5
+  learning_rate: 1e-3  # Increased for batch size 1024 (linear scaling rule)
+  batch_size: 2048
+  num_epochs: 60
+  weight_decay: 5e-5
+  # Learning rate scheduler configuration
+  scheduler:
+    type: "StepLR"  # Options: StepLR, ReduceLROnPlateau, CosineAnnealingLR
+    
+    # for StepLR
+    step_size: 20
+    gamma: 0.8
+
+    # for ReduceLROnPlateau
+    patience: 10
+    factor: 0.5
+    min_lr: 1e-7
+
+    # for CosineAnnealingLR
+    T_max: 100
+    eta_min: 1e-7
 
 data:
   train_data_path: "C:/Users/thari/Desktop/Uni-Oulu/RA-CMVS/PC-detection/MM-Fi"
-  num_workers: 4 # DataLoader workers
+  num_workers: 8  # Increased for larger batch processing
   # Geometry
   center_spec: 0 # Centering: int index or [i, j] / Normalize 
   axis_remap:
     enabled: true
     new_from_old: [2, 0, 1]   # newX=oldZ, newY=oldX, newZ=oldY (signs below)
     flip: [1, -1, -1]         # multiply per-axis after reordering
-  num_rotations_per_pose: 6
-  frames_per_sequence: 50
+  num_rotations_per_pose: 5
+  frames_per_sequence: 100
   # Splitting
   split:
     setting: "S3"           # S1 | S2 | S3
     seed: 42
     # S1 (Random split over sequences)
     # Portion of all sequences used for training; the rest are test.
-    s1_train_ratio: 0.75   # e.g., 0.75 => 75% train, 25% test
-    # Portion of the training sequences carved out for validation.
-    s1_val_ratio_from_train: 0.1   # e.g., 0.1 => 10% of train used as val
+    s1_train_ratio: 0.8   # e.g., 0.75 => 75% train, 25% test
+    
     # S2
     s2_train_subjects: [S01, S02, S03, S04, S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28, S29, S30, S31, S32]
     s2_test_subjects:  [S33, S34, S35, S36, S37, S38, S39, S40]
     # S3
     s3_train_envs: ["E01", "E02", "E03"]
     s3_test_envs: ["E04"]
-    load_from_path: true   # true => load ONLY from load_dir; false => always generate (and optionally save)
-    load_dir: "dataset/splits/S3_split_250824_2"  # directory containing train.npz/val.npz/test.npz
-    # save_dir: "dataset/splits/S3_split_250824_2"  # directory to write train.npz/val.npz/test.npz
+
+    # Portion of the training sequences carved out for validation (for all S1, S2, S3).
+    val_ratio_from_train: 0.1   # e.g., 0.1 => 10% of train used as val
+
+    load_from_path: false   # true => load ONLY from load_dir; false => always generate (and optionally save)
+    load_dir: "dataset/splits/S3_nrpp100_fps5"  # directory containing train.npz/val.npz/test.npz
+    save_dir: "dataset/splits/S3_nrpp100_fps5"  # directory to write train.npz/val.npz/test.npz
 
 logging:
   log_level: "INFO"
