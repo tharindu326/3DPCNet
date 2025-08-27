@@ -50,8 +50,8 @@ data:
     s1_train_ratio: 0.8   # e.g., 0.75 => 75% train, 25% test
     
     # S2
-    s2_train_subjects: [S01, S02, S03, S04, S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28, S29, S30, S31, S32]
-    s2_test_subjects:  [S33, S34, S35, S36, S37, S38, S39, S40]
+    s2_train_subjects: [ S01, S02, S03, S04, S06, S07, S08, S09, S11, S12, S13, S14, S16, S17, S18, S19, S21, S22, S23, S24, S26, S27, S28, S29, S31, S32, S33, S34, S36, S37, S38, S39 ]
+    s2_test_subjects:  [ S05, S10, S15, S20, S25, S30, S35, S40 ]
     # S3
     s3_train_envs: ["E01", "E02", "E03"]
     s3_test_envs: ["E04"]

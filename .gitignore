@@ -3,6 +3,7 @@ checkpoints/
 plots/
 test_data/
 models/
+data/
 
 
 *.pt
