@@ -50,6 +50,7 @@ class MLPEncoder(nn.Module):
 class GCNEncoder(nn.Module):
     """
     Graph Convolutional Network encoder for 3D poses
+    Vectorized implementation for efficient batch processing
     """
     def __init__(self, input_dim=3, hidden_dim=64, output_dim=256, 
                  num_joints=17, dropout=0.1, num_layers=3):
@@ -60,6 +61,9 @@ class GCNEncoder(nn.Module):
         
         # Define skeleton connectivity (custom 17-joint format)
         self.register_buffer('edge_index', self._get_skeleton_edges())
+        
+        # Pre-compute adjacency matrix for efficient operations
+        self.register_buffer('adj_matrix', self._compute_adjacency_matrix())
         
         # GCN layers
         self.gcn_layers = nn.ModuleList()
@@ -101,6 +105,25 @@ class GCNEncoder(nn.Module):
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
         return edge_index
     
+    def _compute_adjacency_matrix(self):
+        """Pre-compute adjacency matrix for efficient batch operations"""
+        # Create adjacency matrix
+        adj = torch.zeros(self.num_joints, self.num_joints, dtype=torch.float32)
+        row, col = self.edge_index
+        
+        # Set connections to 1
+        adj[row, col] = 1.0
+        
+        # Add self-loops
+        adj += torch.eye(self.num_joints)
+        
+        # Normalize by degree (symmetric normalization)
+        degree = adj.sum(dim=1, keepdim=True)
+        degree_sqrt = torch.sqrt(degree + 1e-8)  # Add small epsilon to avoid division by zero
+        adj_normalized = adj / (degree_sqrt * degree_sqrt.t())
+        
+        return adj_normalized
+    
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -108,25 +131,31 @@ class GCNEncoder(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
     
-    def _gcn_forward(self, x, edge_index, layer):
-        """Simple GCN message passing"""
-        row, col = edge_index
+    def _gcn_forward_vectorized(self, x, adj_matrix, layer):
+        """
+        Vectorized GCN forward pass using matrix multiplication
+        Args:
+            x: (batch, joints, features) input features
+            adj_matrix: (joints, joints) normalized adjacency matrix
+            layer: Linear layer to apply
+        Returns:
+            (batch, joints, features) output features
+        """
+        # Graph convolution: H = σ(D^(-1/2) * A * D^(-1/2) * X * W)
+        # Since we pre-computed D^(-1/2) * A * D^(-1/2), we just need: H = σ(A * X * W)
         
-        # Aggregate neighbors
-        out = torch.zeros_like(x)
-        for i in range(x.size(0)):
-            neighbors = col[row == i]
-            if len(neighbors) > 0:
-                out[i] = torch.mean(x[neighbors], dim=0)
-            else:
-                out[i] = x[i]
+        # Apply adjacency matrix: (batch, joints, features) = (joints, joints) @ (batch, joints, features)
+        # Use torch.matmul for efficient batch matrix multiplication
+        x_aggregated = torch.matmul(adj_matrix, x)  # (batch, joints, features)
         
         # Apply linear transformation
-        out = layer(out)
-        return out
+        x_transformed = layer(x_aggregated)  # (batch, joints, hidden_dim)
+        
+        return x_transformed
     
     def forward(self, x):
         """
+        Vectorized forward pass for entire batch
         Args:
             x: (batch, joints, 3) 3D pose coordinates
         Returns:
@@ -134,22 +163,21 @@ class GCNEncoder(nn.Module):
         """
         batch_size, num_joints, input_dim = x.shape
         
-        # Process each graph in the batch
-        outputs = []
-        for b in range(batch_size):
-            graph_x = x[b]  # (joints, input_dim)
-            # Apply GCN layers
-            for i, layer in enumerate(self.gcn_layers):
-                graph_x = self._gcn_forward(graph_x, self.edge_index, layer)
-                if i < len(self.gcn_layers) - 1:  # No activation on last layer
-                    graph_x = F.relu(graph_x)
-                    graph_x = self.dropout(graph_x)
-            outputs.append(graph_x)
-        # Stack batch
-        x = torch.stack(outputs, dim=0)  # (batch, joints, hidden_dim)
-        # Global pooling
-        x = x.reshape(batch_size, -1)  # Flatten
-        x = self.global_pool(x)
+        # Process entire batch at once using vectorized operations
+        current_x = x  # (batch, joints, input_dim)
+        
+        # Apply GCN layers with vectorized operations
+        for i, layer in enumerate(self.gcn_layers):
+            current_x = self._gcn_forward_vectorized(current_x, self.adj_matrix, layer)
+            
+            if i < len(self.gcn_layers) - 1:  # No activation on last layer
+                current_x = F.relu(current_x)
+                current_x = self.dropout(current_x)
+        
+        # Global pooling: flatten and apply MLP
+        x = current_x.reshape(batch_size, -1)  # (batch, joints * hidden_dim)
+        x = self.global_pool(x)  # (batch, output_dim)
+        
         return x
 
 
