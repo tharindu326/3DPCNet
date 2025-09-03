@@ -31,8 +31,7 @@ class PCTrainer:
                  model: PoseCanonicalizationNet,
                  device: torch.device,
                  learning_rate: float = 1e-4,
-                 pose_weight: float = 1.0,
-                 rotation_weight: float = 1.0,
+                 loss_config: Dict = None,
                  weight_decay: float = 1e-4,
                  scheduler_config: dict = None,
                  log_interval: int = 10):
@@ -49,8 +48,16 @@ class PCTrainer:
         self.model = model.to(device)
         self.device = device
         
-        # Loss function
-        self.criterion = PoseCanonicalizationLoss(pose_weight=pose_weight, rotation_weight=rotation_weight)
+        # Loss function from loss_config
+        loss_cfg_local = loss_config or {}
+        self.criterion = PoseCanonicalizationLoss(
+            pose_weight=float(loss_cfg_local.get('pose_weight', 1.0)),
+            rotation_weight=float(loss_cfg_local.get('rotation_weight', 1.0)),
+            cycle_weight=float(loss_cfg_local.get('cycle_weight', 0.0)),
+            perceptual_weight=float(loss_cfg_local.get('perceptual_weight', 0.0)),
+            orthogonality_weight=float(loss_cfg_local.get('orthogonality_weight', 0.0)),
+            residual_l2_weight=float(loss_cfg_local.get('residual_l2_weight', 0.0))
+        )
         
         # Optimizer (following 6DRepNet training setup)
         self.optimizer = optim.Adam(
@@ -66,25 +73,31 @@ class PCTrainer:
         self.scheduler_type = scheduler_config.get("type", "StepLR")
         
         if self.scheduler_type == "StepLR":
+            step_size = int(scheduler_config.get("step_size", 30))
+            gamma = float(scheduler_config.get("gamma", 0.1))
             self.scheduler = optim.lr_scheduler.StepLR(
-                self.optimizer, 
-                step_size=scheduler_config.get("step_size", 30), 
-                gamma=scheduler_config.get("gamma", 0.1)
+                self.optimizer,
+                step_size=step_size,
+                gamma=gamma
             )
         elif self.scheduler_type == "ReduceLROnPlateau":
+            factor = float(scheduler_config.get("factor", 0.5))
+            patience = int(scheduler_config.get("patience", 10))
+            min_lr = float(scheduler_config.get("min_lr", 1e-7))
             self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
                 mode='min',
-                factor=scheduler_config.get("factor", 0.5),
-                patience=scheduler_config.get("patience", 10),
-                min_lr=scheduler_config.get("min_lr", 1e-7),
-                verbose=True
+                factor=factor,
+                patience=patience,
+                min_lr=min_lr
             )
         elif self.scheduler_type == "CosineAnnealingLR":
+            T_max = int(scheduler_config.get("T_max", 100))
+            eta_min = float(scheduler_config.get("eta_min", 1e-7))
             self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=scheduler_config.get("T_max", 100),
-                eta_min=scheduler_config.get("eta_min", 1e-7)
+                T_max=T_max,
+                eta_min=eta_min
             )
         else:
             raise ValueError(f"Unsupported scheduler type: {self.scheduler_type}. "
@@ -92,6 +105,8 @@ class PCTrainer:
         
         self.logger = logging.getLogger(__name__)
         self.log_interval = max(1, int(log_interval))
+        # Optional auxiliary losses controlled via loss_config
+        self.flip_consistency_weight = float(loss_cfg_local.get('flip_consistency_weight', 0.0))
     
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """
@@ -129,7 +144,26 @@ class PCTrainer:
         # Backward pass
         self.optimizer.zero_grad()
         loss_dict['total_loss'].backward()
+        
+        # Gradient clipping to prevent exploding gradients leading to NaN
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        
+        # Check for NaN gradients before optimizer step
+        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+            print(f"Warning: NaN/Inf gradients detected (norm: {grad_norm}), skipping optimizer step")
+            self.optimizer.zero_grad()  # Clear bad gradients
+            # Return zero losses to prevent propagation
+            return {k: 0.0 for k in loss_dict.keys()}
+        
         self.optimizer.step()
+        
+        # Validate loss values before returning
+        for key, value in loss_dict.items():
+            if torch.is_tensor(value):
+                if torch.isnan(value) or torch.isinf(value):
+                    print(f"Warning: {key} contains NaN/Inf values")
+                    # Set to zero to prevent training instability
+                    loss_dict[key] = torch.tensor(0.0, device=value.device)
         
         # Convert to float for logging
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
@@ -516,6 +550,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train 3DPCNet Pose Canonicalization")
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config. Defaults to base config if omitted.")
     parser.add_argument("--override", type=str, nargs="*", default=[], help="Overrides as dot.key=value pairs")
+    parser.add_argument("--experiment-name", type=str, default="experiment", help="Name for this experiment (used in checkpoint folder naming)")
     parser.add_argument("--sanity-check", action="store_true", help="Run a quick synthetic forward/backward check and exit")
     args = parser.parse_args()
 
@@ -525,15 +560,19 @@ if __name__ == "__main__":
             logger.warning(f"Ignoring invalid override: {ov}")
             continue
         key, value = ov.split("=", 1)
-        if value.lower() in ["true", "false"]:
+        # Try to parse booleans
+        if isinstance(value, str) and value.lower() in ["true", "false"]:
             parsed = value.lower() == "true"
         else:
+            # Try to parse ints/floats including scientific notation like 1e-7
             try:
-                parsed = float(value) if ("." in value or value.isdigit()) else value
-                if isinstance(parsed, float) and parsed.is_integer():
-                    parsed = int(parsed)
+                # Try int first
+                parsed = int(value)
             except Exception:
-                parsed = value
+                try:
+                    parsed = float(value)
+                except Exception:
+                    parsed = value
         cfg_mgr.set(key, parsed)
     config = cfg_mgr.to_dict()
 
@@ -545,7 +584,8 @@ if __name__ == "__main__":
     # Prepare timestamped run directory under checkpoints
     base_ckpt_dir = config.get('checkpoints', {}).get('save_dir', './checkpoints')
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    run_dir = os.path.join(base_ckpt_dir, timestamp)
+    experiment_name = args.experiment_name.replace(' ', '_').replace('/', '_')  # Sanitize name
+    run_dir = os.path.join(base_ckpt_dir, f"{timestamp}_{experiment_name}")
     os.makedirs(run_dir, exist_ok=True)
     # File handler writes everything printed to logger
     file_handler = logging.FileHandler(os.path.join(run_dir, 'training.log'))
@@ -582,8 +622,7 @@ if __name__ == "__main__":
         model=model,
         device=device,
         learning_rate=float(train_cfg.get('learning_rate', 1e-4)),
-        pose_weight=float(loss_cfg.get('pose_weight', 1.0)),
-        rotation_weight=float(loss_cfg.get('rotation_weight', 1.0)),
+        loss_config=loss_cfg,
         weight_decay=float(train_cfg.get('weight_decay', 1e-4)),
         scheduler_config=train_cfg.get('scheduler', {}),
         log_interval=int(cfg_mgr.get('logging.log_interval', 10))

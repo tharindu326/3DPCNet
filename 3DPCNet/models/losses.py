@@ -25,7 +25,8 @@ class GeodesicLoss(nn.Module):
         # Trace calculation (adapted from 6DRepNet)
         cos = (m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2] - 1) / 2
         # Compute geodesic distance with numerical stability
-        theta = torch.acos(torch.clamp(cos, -1 + self.eps, 1 - self.eps))
+        # Use more conservative clamping to prevent NaN
+        theta = torch.acos(torch.clamp(cos, -1 + 2*self.eps, 1 - 2*self.eps))
         if self.reduction == 'mean':
             return torch.mean(theta)
         elif self.reduction == 'sum':
@@ -175,6 +176,8 @@ class PerceptualLoss(nn.Module):
             joint1 = pose_3d[:, joint1_idx, :]
             joint2 = pose_3d[:, joint2_idx, :]
             length = torch.norm(joint2 - joint1, dim=-1)
+            # Prevent NaN from zero-length bones
+            length = torch.clamp(length, min=1e-6)
             bone_lengths.append(length)
         return torch.stack(bone_lengths, dim=1)
     
@@ -188,7 +191,8 @@ class PerceptualLoss(nn.Module):
         v1 = shoulder - elbow
         v2 = wrist - elbow
         cos_angle = F.cosine_similarity(v1, v2, dim=-1)
-        angle = torch.acos(torch.clamp(cos_angle, -1, 1))
+        # More robust clamping to prevent NaN from acos
+        angle = torch.acos(torch.clamp(cos_angle, -1 + 1e-6, 1 - 1e-6))
         angles.append(angle)
         return torch.stack(angles, dim=1)
     
