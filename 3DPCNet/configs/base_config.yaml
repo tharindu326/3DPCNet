@@ -7,6 +7,7 @@ model:
   encoder_output_dim: 384
   dropout: 0.15
   predict_mode: "rotation_plus_residual"  # rotation_only | rotation_plus_residual
+  num_layers: 5  # Number of layers for encoder (MLP: 4, GCN: 3, Transformer: 4)
 
 training:
   learning_rate: 1e-3  # Increased for batch size 1024 (linear scaling rule)
@@ -59,7 +60,7 @@ data:
     # Portion of the training sequences carved out for validation (for all S1, S2, S3).
     val_ratio_from_train: 0.1   # e.g., 0.1 => 10% of train used as val
 
-    load_from_path: false   # true => load ONLY from load_dir; false => always generate (and optionally save)
+    load_from_path: true   # true => load ONLY from load_dir; false => always generate (and optionally save)
     load_dir: "dataset/splits/S3_nrpp100_fps5"  # directory containing train.npz/val.npz/test.npz
     save_dir: "dataset/splits/S3_nrpp100_fps5"  # directory to write train.npz/val.npz/test.npz
 

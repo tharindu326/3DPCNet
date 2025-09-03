@@ -573,7 +573,8 @@ if __name__ == "__main__":
         hidden_dim=model_cfg.get('hidden_dim', 512),
         encoder_output_dim=model_cfg.get('encoder_output_dim', 256),
         dropout=model_cfg.get('dropout', 0.1),
-        predict_mode=model_cfg.get('predict_mode', 'rotation_only')
+        predict_mode=model_cfg.get('predict_mode', 'rotation_only'),
+        num_layers=model_cfg.get('num_layers', None)
     )
 
     loss_cfg = config.get('loss', {})

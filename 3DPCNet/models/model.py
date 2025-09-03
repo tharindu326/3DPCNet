@@ -18,7 +18,8 @@ class PoseCanonicalizationNet(nn.Module):
                  hidden_dim: int = 512,
                  encoder_output_dim: int = 256,
                  dropout: float = 0.1,
-                 predict_mode: str = 'rotation_only'):
+                 predict_mode: str = 'rotation_only',
+                 num_layers: int = None):
         """
         Args:
             input_joints: Number of input joints
@@ -35,13 +36,25 @@ class PoseCanonicalizationNet(nn.Module):
         self.rotation_type = rotation_type
         self.predict_mode = predict_mode  # 'rotation_only' | 'rotation_plus_residual'
         
+        # Set default num_layers based on encoder type if not specified
+        if num_layers is None:
+            if encoder_type == 'mlp':
+                num_layers = 4
+            elif encoder_type == 'gcn':
+                num_layers = 3
+            elif encoder_type == 'transformer':
+                num_layers = 4
+        
+        self.num_layers = num_layers
+        
         # Initialize encoder based on type
         if encoder_type == 'mlp':
             self.encoder = MLPEncoder(
                 input_dim=input_joints * 3,  # 3D coordinates
                 hidden_dim=hidden_dim,
                 output_dim=encoder_output_dim,
-                dropout=dropout
+                dropout=dropout,
+                num_layers=self.num_layers
             )
         elif encoder_type == 'gcn':
             self.encoder = GCNEncoder(
@@ -49,7 +62,8 @@ class PoseCanonicalizationNet(nn.Module):
                 hidden_dim=hidden_dim // 4,  # Smaller per-node features
                 output_dim=encoder_output_dim,
                 num_joints=input_joints,
-                dropout=dropout
+                dropout=dropout,
+                num_layers=self.num_layers
             )
         elif encoder_type == 'transformer':
             self.encoder = TransformerEncoder(
@@ -197,7 +211,8 @@ def create_pose_canonicalization_model(
     hidden_dim: int = 512,
     encoder_output_dim: int = 256,
     dropout: float = 0.1,
-    predict_mode: str = 'rotation_only'
+    predict_mode: str = 'rotation_only',
+    num_layers: int = None
 ) -> PoseCanonicalizationNet:
     """
     Factory function to create pose canonicalization model
@@ -218,5 +233,6 @@ def create_pose_canonicalization_model(
         hidden_dim=hidden_dim,
         encoder_output_dim=encoder_output_dim,
         dropout=dropout,
-        predict_mode=predict_mode
+        predict_mode=predict_mode,
+        num_layers=num_layers
     )
